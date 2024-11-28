@@ -1,0 +1,351 @@
+c++.cpp
+
+#include <iostream>
+#include <cstring>
+#include <sys/types.h>
+#include <Winsock2.h>
+#include <netinet/in.h>
+#include <unistd.h>
+
+using namespace std;
+
+struct User {
+    string username;
+    string password;
+};
+
+User userDatabase = {"user1", "password123"};
+bool accessFrozen = false;
+time_t freeze_start;
+
+bool verify_username_password(const string& username, const string& password) {
+    return username == userDatabase.username && password == userDatabase.password;
+}
+
+string send_push_notification() {
+    return "Push notification sent! Please approve it.";
+}
+
+bool verify_pattern(const string& user_pattern, const string& correct_pattern) {
+    return user_pattern == correct_pattern;
+}
+
+void freeze_access() {
+    accessFrozen = true;
+    freeze_start = time(0); // Current time
+}
+
+bool is_access_frozen() {
+    if (accessFrozen) {
+        time_t now = time(0);
+        if (difftime(now, freeze_start) >= 1800) { // 30 minutes
+            accessFrozen = false;
+            return false;
+        }
+        return true;
+    }
+    return false;
+}
+
+string handle_login(const string& body) {
+    string username = "user1";  // Extracted from body (hardcoded here)
+    string password = "password123";  // Extracted from body (hardcoded here)
+
+    if (is_access_frozen()) {
+        return "Access is frozen. Try again after 30 minutes.";
+    }
+
+    if (verify_username_password(username, password)) {
+        return send_push_notification();
+    }
+    return "Invalid username or password.";
+}
+
+string handle_pattern_verification(const string& body) {
+    string correct_pattern = "012345";  // Example of hardcoded correct pattern
+    string user_pattern = "012345";  // Extracted from body (hardcoded here)
+    
+    static int attempt_count = 0;
+
+    if (verify_pattern(user_pattern, correct_pattern)) {
+        attempt_count = 0;
+        return "Pattern correct! Access granted.";
+    } else {
+        attempt_count++;
+        if (attempt_count >= 2) {
+            freeze_access();
+            attempt_count = 0;
+            return "Too many incorrect attempts. Access frozen for 30 minutes.";
+        }
+        return "Incorrect pattern. Try again.";
+    }
+}
+
+void handle_client(int client_socket) {
+    char buffer[1024];
+    int recv_len = recv(client_socket, buffer, sizeof(buffer), 0);
+
+    if (recv_len > 0) {
+        buffer[recv_len] = '\0';
+        string request(buffer);
+
+        string response;
+        if (request.find("POST /login") != string::npos) {
+            response = handle_login(request);
+        } else if (request.find("POST /verify-pattern") != string::npos) {
+            response = handle_pattern_verification(request);
+        } else {
+            response = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+        }
+
+        string http_response = "HTTP/1.1 200 OK\r\nContent-Length: " + to_string(response.size()) + "\r\n\r\n" + response;
+        send(client_socket, http_response.c_str(), http_response.size(), 0);
+    }
+
+    close(client_socket);
+}
+
+int main() {
+    int server_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_socket < 0) {
+        cerr << "Failed to create socket." << endl;
+        return -1;
+    }
+
+    struct sockaddr_in server_addr;
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(18080);
+
+    if (bind(server_socket, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+        cerr << "Binding failed." << endl;
+        return -1;
+    }
+
+    if (listen(server_socket, 5) < 0) {
+        cerr << "Listening failed." << endl;
+        return -1;
+    }
+
+    cout << "Server running on port 18080..." << endl;
+
+    while (true) {
+        int client_socket = accept(server_socket, NULL, NULL);
+        if (client_socket < 0) {
+            cerr << "Failed to accept connection." << endl;
+            continue;
+        }
+
+        handle_client(client_socket);
+    }
+
+    close(server_socket);
+    return 0;
+}
+
+
+
+index.html
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Two-Step Verification</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <div class="container">
+        <h1>Two-Step Verification</h1>
+
+        <!-- Login Form -->
+        <div id="login-section">
+            <h2>Login</h2>
+            <form id="login-form">
+                <input type="text" id="username" placeholder="Username" required><br>
+                <input type="password" id="password" placeholder="Password" required><br>
+                <button type="submit">Login</button>
+            </form>
+        </div>
+
+        <!-- Push Notification Message (Simulated) -->
+        <div id="notification-section" class="hidden">
+            <h2>Push Notification</h2>
+            <button id="approve-push">Approve Push Notification</button>
+        </div>
+
+        <!-- Pattern Drawing -->
+        <div id="pattern-section" class="hidden">
+            <h2>Draw Your Pattern</h2>
+            <canvas id="pattern-canvas" width="300" height="300"></canvas>
+            <button id="submit-pattern">Submit Pattern</button>
+        </div>
+
+        <!-- Result Message -->
+        <div id="result-section" class="hidden">
+            <h2 id="result-message"></h2>
+        </div>
+
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
+
+
+
+script.js
+
+// Elements
+const loginSection = document.getElementById('login-section');
+const notificationSection = document.getElementById('notification-section');
+const patternSection = document.getElementById('pattern-section');
+const resultSection = document.getElementById('result-section');
+const resultMessage = document.getElementById('result-message');
+const patternCanvas = document.getElementById('pattern-canvas');
+const ctx = patternCanvas.getContext('2d');
+
+// Simulated server data
+const correctPattern = ['00', '01', '11', '21']; // Example of a 2x2 grid pattern
+
+// Handle login
+document.getElementById('login-form').addEventListener('submit', function(event) {
+    event.preventDefault();
+    
+    // Get username and password values (hardcoded for demo)
+    const username = document.getElementById('username').value;
+    const password = document.getElementById('password').value;
+
+    if (username === 'user1' && password === 'password123') {
+        alert('Login successful! A push notification has been sent to your device.');
+        loginSection.classList.add('hidden');
+        notificationSection.classList.remove('hidden');
+    } else {
+        alert('Invalid username or password.');
+    }
+});
+
+// Simulate push notification approval
+document.getElementById('approve-push').addEventListener('click', function() {
+    alert('Push notification approved!');
+    notificationSection.classList.add('hidden');
+    patternSection.classList.remove('hidden');
+});
+
+// Pattern drawing
+let isDrawing = false;
+let userPattern = [];
+let lastPosition = null;
+
+patternCanvas.addEventListener('mousedown', startDrawing);
+patternCanvas.addEventListener('mousemove', drawPattern);
+patternCanvas.addEventListener('mouseup', stopDrawing);
+
+function startDrawing(event) {
+    isDrawing = true;
+    lastPosition = getMousePosition(event);
+    userPattern.push(getGridPosition(lastPosition));
+}
+
+function drawPattern(event) {
+    if (!isDrawing) return;
+
+    const currentPosition = getMousePosition(event);
+    drawLine(lastPosition, currentPosition);
+    lastPosition = currentPosition;
+    userPattern.push(getGridPosition(lastPosition));
+}
+
+function stopDrawing() {
+    isDrawing = false;
+}
+
+function getMousePosition(event) {
+    const rect = patternCanvas.getBoundingClientRect();
+    return {
+        x: event.clientX - rect.left,
+        y: event.clientY - rect.top
+    };
+}
+
+function getGridPosition(position) {
+    const gridX = Math.floor(position.x / 100); // Assuming 3x3 grid
+    const gridY = Math.floor(position.y / 100);
+    return `${gridX}${gridY}`;
+}
+
+function drawLine(from, to) {
+    ctx.beginPath();
+    ctx.moveTo(from.x, from.y);
+    ctx.lineTo(to.x, to.y);
+    ctx.stroke();
+}
+
+document.getElementById('submit-pattern').addEventListener('click', function() {
+    if (JSON.stringify(userPattern) === JSON.stringify(correctPattern)) {
+        resultMessage.textContent = 'Pattern correct! Access granted.';
+    } else {
+        resultMessage.textContent = 'Incorrect pattern. Try again.';
+    }
+    patternSection.classList.add('hidden');
+    resultSection.classList.remove('hidden');
+});
+
+
+
+style.css
+
+body {
+    font-family: Arial, sans-serif;
+    background-color: #f5f5f5;
+    text-align: center;
+    margin: 0;
+    padding: 20px;
+}
+
+.container {
+    max-width: 500px;
+    background-color: white;
+    padding: 20px;
+    border-radius: 8px;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+}
+
+h1 {
+    color: #333;
+}
+
+form {
+    margin-bottom: 20px;
+}
+
+input {
+    width: 90%;
+    padding: 10px;
+    margin: 10px 0;
+    border-radius: 5px;
+    border: 1px solid #ddd;
+}
+
+button {
+    padding: 10px 20px;
+    background-color: #4CAF50;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+}
+
+button:hover {
+    background-color: #45a049;
+}
+
+canvas {
+    border: 2px solid #ddd;
+}
+
+.hidden {
+    display: none;
+}
